@@ -1,0 +1,2 @@
+# Data-analystys-salary-research
+I have carried out research about salaries of data analysts based on data set that collected information from job advertisements in the USA labor market. The dataset contained about 740 observations and 42 variables. I've preprocessed it using dplyr and tidyr packages. Then i tried exploiting some interesting facts from it using ggplot2. The commentary is written in Polish.
