@@ -1,0 +1,350 @@
+---
+title: "Projekt 2: Zarobki w branży analizy danych na podstawie ogłoszeń pracy Stanach Zjednoczonych"
+author: "Sebastian Sukiennik"
+date: "1/11/2022"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Wprowadzanie  
+W wybranym zbiorze danych znajdują się informacje na temat ofert pracy w branży analizy danych. Zebrane dane przedstawiają 40 atrybutów ogłoszeń pulibkowanych na rynku pracy Stanów Zjednoczonych. Niektóre z występujących kolumn:
+
+* Job.Title - tytuł ogłoszenia
+* Salary.Estimate - estymacja wynagrodzenia według portalu Glassdoor (tworzy estymacje na podstawie anonimowych opini byłych i aktualnych pracowników)
+* Rating - ocena stanowiska pracy wdg. Glassdoor
+* Age - liczba dni od dodania ogłoszenia
+* Python, Spark, aws... - kolumny nazw technologi wymaganych na stanowisko (0/1 - nie wymagana/wymagana)
+* job_title_sim - kategoria rodzaju pracy
+* seniority_by_title - tytuł poziomu doświadzczenia
+* Degree - minimalny wymagany poziom wykształcenie
+
+W niektórych komórkach występują wartości -1 lub "na" według autora zbioru danych oznaczają one wartości których nie udało się zebrać dla danego ogłoszenia.
+
+
+> Głównym celem mojego projektu jest wyznaczenie atrybutów charakterystycznyhch dla najlepiej opłacanych stanowisk pracy w branży. Jaki poziom wykształcenia, doświadczenia, poznane technologie zapewnią przyszłemu analitykowi danych najwyżse zarobki. Postaram się także odpowiedzieć czy wynagrodzenie zależy od lokalizacji, wielkości, ratingu (itp.) firmy, a jeśli tak, to gdzie należy szukać stanowisk z najwyższymi stawkami.
+
+
+```{r cars, include=FALSE}
+library(dplyr)
+library(ggplot2)
+library(tidyr)
+library(wesanderson)
+data <- read.csv("DataScientistSalary_2021.csv")
+```
+
+
+Usuwam kolumny Job.Description oraz Competitors, ponieważ w mojej analizie nie zamierzam korzystać z informacji zawaratych w tych kolumnach.
+```{r}
+data_withoutdesc <- data %>%
+  select(-c(Job.Description, Competitors))
+head(data_withoutdesc)
+```
+
+
+Aby lepiej poznać dane wypisuję unikalne wartości z kolumn zawierających dane kategoryczne, oraz statystki opisowe dla kolumn z danymi numerycznymi. Przy wypisywaniu unikalnych wartości odrzuciłem kolumny typu: Job.Title, Company.Name, ponieważ dla większości ogłoszeń były to wartości niepowtarzalne, wypisanie np. 500 nazw firm bylo zwyczajnie nieczytalne i nie wnosiło żadnych istotnych informacji.
+```{r}
+(data_withoutdesc %>%
+  select(where(is.character)) %>%
+  select(-c(Job.Title, Salary.Estimate, Company.Name, Headquarters, company_txt, Location)) %>%
+  lapply(unique))
+```
+
+
+Przy badaniu dancyh numerycznych pominąłem kolumny w których zawarte były dane w zasadzie kategoryczne (np. kolumny z technologiami mają dane 0/1).
+```{r}
+(data_withoutdesc %>% 
+   select(c(Rating, Hourly, Lower.Salary, Upper.Salary, Avg.Salary.K., Age)) %>%
+   summarise(across(where(is.numeric), ~ list(summary(.)))))
+```
+
+## Pytanie 1
+***
+> Czy średnia zarboków zależy od wymaganego minimalnego wykształcenia
+
+```{r}
+count <- data_withoutdesc %>%
+  count(Degree)
+
+data <- data_withoutdesc %>%
+  select(c(Degree, Avg.Salary.K.)) %>%
+  group_by(Degree) %>%
+  summarize(Mean = mean(Avg.Salary.K.), Median = median(Avg.Salary.K.))
+
+data$Count = count$n
+data
+```
+
+Aż 383 ogłoszenia mają w kolumnie Degree wpisane wartości "na". Ponieważ średnie wynagrodzenie i mediana dla tych ogłoszeń są niższe od ogłoszeń z wymaganym wykształceniem Masters/Phd to uważam że wartości "na" w większości odpowiadają minimalnemu wykształceniu wymaganemu na tego typu stanowiskach (Bachelors Degree). Istnieje oczywiście możliwość że w niektórych ogłoszeniach zwyczajnie nie ma określonego minimalnego wykształcenia, jednakże znając realia obecnego rynku pracy zostanę przy założeniu że chodzi o Bachelors Degree.
+```{r}
+data_withoutdesc <- data_withoutdesc %>%
+  mutate(Degree = case_when(Degree == "na" ~ "B",
+                            TRUE ~ Degree))
+data_withoutdesc$Degree <- factor(data_withoutdesc$Degree, levels = c('B', 'M', 'P'))
+
+plot1 <- ggplot(data = data_withoutdesc, aes(x=Degree, y = Avg.Salary.K.)) + 
+  geom_boxplot(aes(fill=Degree))  +
+  labs(title = "Srednia zarobków według wykształcenia", y = "Średnie wynagrodzenie", x = "Poziom wykształcenia") + 
+  theme_minimal() + 
+  theme(plot.title = element_text(hjust = 0.5))
+```
+
+Na poniższym wykresie pudełkowym przedstawiłem średnie zarobki według minimalnego wykształcenia wymaganego w ogłoszeniach. Uważam że te kilka wartości odstającyh przy pudełku dla Bachelors Degree to właśnie ogłoszenia przeznaczone prawdopodbnie dla Masters/Phd a trafiły do grupy B ze względu na przyjęte przeze mnie ww. założenia. 
+Różnica median między Phd a Master jest prawie dwukrotnie wyższa niż ta między Bachelors a Master. Według mnie oznacz to że najmniej opłacalne pod względem zarobków/czasu edukacji jest zakończenie edkuacji na pozimie Master.
+
+```{r echo=FALSE, , out.width='100%'}
+plot1
+```
+
+
+## Pytanie 2
+
+***
+> Jakie technologie są wymagane w najlepiej opłacanych ofertach pracy
+
+Wezmę 20 najwyżej opłacanych ogłoszeń pracy dla każdego poziomu wykształcenia i przedstawię jakie technologie są w nich najczęściej wymagane
+```{r}
+data <- data_withoutdesc %>%
+  select(Degree, Avg.Salary.K., Python, spark, aws, excel, sql, sas, keras, pytorch, scikit, tensor, hadoop, tableau, bi, flink, mongo, google_an) %>%
+  arrange(desc(Avg.Salary.K.)) %>% 
+  group_by(Degree)
+```
+
+Funkcje do usuwania wartości odstających, sumowania liczby wystąpień technologi w ogłoszeniach oraz do tworzenia wykresów kolumnowych. 
+
+```{r}
+remove_outliers <- function(data){
+  Q <- quantile(data$Avg.Salary.K., probs=c(.25, .75), na.rm = FALSE)
+  iqr <- IQR(data$Avg.Salary.K.)
+  up <-  Q[2]+1.5*iqr # Upper Range  
+  low<- Q[1]-1.5*iqr # Lower Range
+  eliminated <- subset(data, data$Avg.Salary.K. > (Q[1] - 1.5*iqr) & data$Avg.Salary.K. < (Q[2]+1.5*iqr))
+  eliminated
+}
+
+calculate_tech <- function(data){
+  data <- data %>%
+    gather("tech", "n") %>%
+    filter(tech != "Degree" & tech != "Avg.Salary.K.") %>%
+    group_by(tech) %>%
+    summarise(sum = sum(as.numeric(n))) %>% 
+    arrange(desc(sum))
+  data
+}
+
+plot_tech <- function(data){
+  plot2 <- ggplot(data, aes(x = tech, y = sum)) + 
+  geom_bar(stat="identity", fill="steelblue")
+  plot2
+}
+```
+
+Rozdzielam tabele na oddzielne dla Bachelor, Master i Phd, odsiewam wartośći odstające, wybieram 10 najwyżej płatnych stanowisk dla każdej z grup wykształcenia. Usuwam technologie które w każdej z grup nie wystąpiły ani razu (bi, google_an, kera, pytorch). Wywołuję funkcje tworzącą wykresy.
+
+```{r, out.width='100%'}
+data_b <- data %>% 
+  filter(Degree == "B")
+data_m <- data %>% 
+  filter(Degree == "M")
+data_p <- data %>% 
+  filter(Degree == "P")
+
+data_b <- remove_outliers(data_b) %>% slice(0:20)
+data_m <- remove_outliers(data_m) %>% slice(0:20)
+data_p <- remove_outliers(data_p) %>% slice(0:20)
+
+db <- calculate_tech(data_b)
+dm <- calculate_tech(data_m)
+dp <- calculate_tech(data_p)
+
+all <- bind_rows(list("B"=db, "M"=dm, "P"=dp), .id = "groups")
+all <- all %>% 
+  filter(!(tech %in% c("bi", "google_an", "keras", "pytorch")))
+
+```
+
+
+```{r echo=FALSE, , out.width='100%'}
+plot_tech(db) + labs(title= "Suma liczby wystąpień technologi \ndla Bachelor ", y="Liczba wystąpień", x = "Nazwa technologii")  + 
+  theme_minimal() + 
+  ylim(0, 20) +
+  theme(plot.title = element_text(hjust = 0.5))
+```
+
+```{r echo=FALSE, , out.width='100%'}
+plot_tech(dm) + labs(title= "Suma liczby wystąpień technologi \ndla Master ", y="Liczba wystąpień", x = "Nazwa technologii") + 
+  theme_minimal() + 
+  ylim(0, 20) +
+  theme(plot.title = element_text(hjust = 0.5))
+```
+
+
+```{r echo=FALSE, , out.width='100%'}
+plot_tech(dp) + labs(title= "Suma liczby wystąpień technologi \ndla Phd ", y="Liczba wystąpień", x = "Nazwa technologii") + 
+  theme_minimal() + 
+  ylim(0, 20) +
+  theme(plot.title = element_text(hjust = 0.5))
+```
+Z powyżej przedstawionych wykresów jasno wynika iż najczęśniej wymaganą technologią dla najwyżej opłacanych stanowisk (nie zależnie od poziomu wykształcenia) jest Python, na drugim i trzecim miejscu dla Bachelors i Masters'ów plasują się excel i SQL. Dla stanowisk z wymaganym poziomem wykształcenia Phd na podobnam poziomie (6-8 na 20 ogłoszeń) plasują się technologie takie jak aws, hadoop, spark, tensor).
+
+## Pytanie 3
+***
+> Czy wynagrodzenie zależy od liczby lat istnienia firmy
+
+Odsiewam niepotrzebne dane, groupuję według roku założenia firmy i dla każdego roku obliczam średnie wynagrodzenie. Na koniec sortuję rosnąco według roku założenia i tworzę wykres liniowy z otrzymanymi wynikami.
+```{r}
+data <- data_withoutdesc %>%
+  select(Founded, Avg.Salary.K., Degree) %>%
+  filter(Founded > 1900) %>%
+  group_by(Founded, Degree) %>% 
+  summarise(Mean = mean(Avg.Salary.K.)) %>%
+  arrange(Founded)
+
+plotb <- ggplot(data%>%filter(Degree=="B"), aes(x=Founded, y = Mean, color=Degree)) +
+  geom_line() +
+  ylim(0, 200) +
+  theme_minimal()
+plotm <- ggplot(data%>%filter(Degree=="M"), aes(x=Founded, y = Mean, color=Degree)) +
+  geom_line() +
+  ylim(0, 200) +
+  theme_minimal()
+plotp <- ggplot(data%>%filter(Degree=="P"), aes(x=Founded, y = Mean, color=Degree)) +
+  geom_line() +
+  ylim(0, 200) +
+  theme_minimal()
+```
+
+Na poniższym wykresie ciężko dopatrzyć się wyraźnych zależności między rokiem założenia firmy a proponowanym przez nią wynagrodzeniem. Niewiele firm powstałych przed rokiem 1900 nadal prowadzi swoją działalność, dlatego pojedyncze przypadki tak starych firm odzrzuciłem aby nie wprowadzały mylnych interpretacji. Dla firm założonych między 1900 a 1990 rokiem ciężko mówić o jakiejkolwike zależności. Jedynie dla firm założonych po 1990 roku, średnia wynagrodzeń wydaje się stale utrzymywać powyżej poziomu 75 000$, podczas gdy istnieją firmy założone przed 1990 oferujące wynagrodzenie na poziomie 50/60 tys.\$ 
+```{r echo=FALSE, out.width='100%' }
+library(ggpubr)
+ggarrange(plotb, plotm, plotp, labels=c("B", "M", "P"), ncol = 1, nrow =3)
+```
+
+
+## Pytanie 4
+***
+> Jak wielkości firmy wpływa na średnie zarobki
+
+```{r}
+
+data_withoutdesc <- data_withoutdesc %>%
+  filter(Size != "unknown")
+
+
+data_withoutdesc$Size <- factor(data_withoutdesc$Size, levels = c('1 - 50 ', '51 - 200 ', '201 - 500 ', '501 - 1000 ', '1001 - 5000 ', '5001 - 10000 ', '10000+ '))
+data <- data_withoutdesc %>%
+  select(Size, Avg.Salary.K., Degree) %>%
+  group_by(Size, Degree) %>% 
+  summarise(Mean = mean(Avg.Salary.K.))
+
+
+plot2 <- ggplot(data, aes(x = Size, y = Mean, fill=Degree))+ 
+  geom_bar(stat="identity", position=position_dodge()) + 
+  ylim(0, 200) +
+  labs(title = "Średnia zarobków według wielkości firmy \ni stopnia wykształcenia") + 
+  theme_minimal() + 
+  theme(plot.title = element_text(hjust = 0.5))
+```
+
+Na opniższym wykresie widać że w małych (do 500 osób) i dużych (10000+ osób) firmach pracownicy z Phd mają zarobki podobne lub nawet niższe od tych z wykształceniem na poziomie Masters. Natomiast zarobki osób z wykształceniem Bachelor degree są zdecydowanie niższe od lepiej wykształconych współpracowników tylko w firmach do 50 osób i w największych korporacjach. W pozostałych przypadkach zarbaiją tylko minimalnie mniej od Masters'ów. Podsumowując:
+
+* Bachelor degree powininen szukać zatrudnienia w małych firmach do 500 osób
+* Mastersi powinni skupić się na firmach do 200 osób lub korporacjach powyżej 10 000 pracowników gdzie zarobi prawie tyle samo co Phd
+* Phd otrzyma najlepsze wynagrodzenie w firmach wielkość 501-1000 osób lub powyżej 5000 zatrudnionych osób
+```{r echo=FALSE, out.width='100%'}
+plot2
+```
+
+
+## Pytanie 5
+***
+> Czy średnie zarobki zależą od ratingu firmy
+
+Na początek wybieram interesujące mnie dane, odsiewam obserwacje z ujemnymi wynikami ratingu (nie udało się zebrać danych dla danego ogłoszenia). Dodaję także kolumnę lt150 która przyjmuje wartości bool (TRUE dla wierszy gdzie Avg.Salary.K. nie przekracza 150 tys. $).  Tworząc wykres punktowy przy użyciu geom_point() koloruję punkty odowiadające ogłoszeniom firm w których średnie zarobki przekraczają 150 tys dolarów. Ponieważ ratingi są określane z dokładnośćią do jednego miejsca po przecinku, na wykresie widać wyraźne pionowe linie skupienia punktów. Aby lepiej zwizulizować natężenie obserwacji w danym miejscu wykresu używam argumentu *alpha=0.6*.  
+Można zauważyć, że większość firm zawiera się w przedziale od 2 do 5 i tylko jedna z ponad 700 firm uzyskała rating poniżej 2 punktów. 
+```{r}
+data <- data_withoutdesc %>%
+  select(Rating, Avg.Salary.K., Degree) %>%
+  filter(Rating > 0) %>%
+  mutate(lt150 = Avg.Salary.K.<=150)
+
+plot3 <- ggplot(data , aes(x = Rating, y = Avg.Salary.K.)) +
+          geom_point(stat="identity", aes(color=lt150), alpha = 0.6) +
+          xlim(0, 5) + 
+          ylim(0, 300) + 
+          labs(title= "Zależność proponowanych średnich zarobków od ratingu firmy", y="Średnie wynagrodzenie") + 
+          theme_minimal() + 
+          theme(plot.title = element_text(hjust = 0.5), legend.position = "none")
+```
+
+```{r, echo=FALSE, out.width='100%'}
+plot3
+```
+
+Z wykresu można wywnioskować, że większość firm oferujących stanowiska z wynagrodzeniem powyżej 150 000 dolarów ma wysokośc ratingu zawierającą się w przedziale 3 do 4.5. Aby sprawdzić jaki procent interesujących mnie firm faktycznie zawiera się w tym przedziale, obliczam sumę wszystkich firm z wyngrodzeniem powyżej 150 tysięcy, następnie obliczam ile z nich ma rating większy od 3 i mniejszy od 4,5 a na koniec liczę stosunek tych wartości.
+```{r}
+gt150 <- sum(!data$lt150)
+gt150_inrange <- data %>%
+  select(Avg.Salary.K., lt150, Rating) %>%
+  filter(Rating >= 3 & Rating <= 4.5 & !lt150)
+gt150_inrange_sum <- length(gt150_inrange$Rating)
+
+(round(gt150_inrange_sum/gt150, 2))
+```
+Jak się okazuje aż 95% firm oferujących wynagrodzenie większe bądź równe 150 tys. $ ma rating z przedziału [3; 4.5]. A więc wbrew pozorom firmy z największymi wynagrodzeniami nie osiągają najwyższych ocen. Na wykresie widzimy kilka ogłoszeń firm z najwyższą możliwą oceną (5) a oferujących płace na poziomie nie przekraczającym 150 tysięcy dolarów.
+
+## Pytanie 6
+***
+> Jak kształtuje się średnia płaca względem tytułu stanowiska
+
+W celu odpowiedzi na to pytanie, rozpoczynam od interesujących mnie kolumn, odsiania brakujących wartości z kolumny job_title_sim a następnie skróceniu dłuższych wartości zmiennych. Zliczam liczbę ogłoszeń pogrupowanych wedlug poszukiwanego stanowiska. Dzięki temu mogę zauważyć, że data analitics występuje tylko w 8 ogłoszeniach a data modeler i director w zaledwiu 5. Zdecydowałem odrzucić obserwacje zawierające te 3 stanowsika, ponieważ ze względu na małą liczbę obserwacji, wykres dla nich mógłby przedstawiać wartości fałszywie zawyżone/zaniżone.
+```{r}
+data <- data_withoutdesc %>%
+  select(job_title_sim, Avg.Salary.K.) %>%
+  filter(job_title_sim != "na") %>%
+  mutate(job_title_sim = case_when(job_title_sim == "machine learning engineer" ~ "ML engineer",
+                   job_title_sim == "Data scientist project manager" ~ "Data scientist PM",
+                   TRUE ~ job_title_sim))
+
+(count_by_jtitle <- data %>%
+  group_by(job_title_sim) %>%
+  count() %>% 
+  arrange(desc(n)))
+
+top_count_title <- count_by_jtitle %>% 
+  head(6) %>%
+  select(job_title_sim)
+```
+
+Ponownie filtruję dane, tym razem odrzucają obserwacje dla 3 ww. stanowisk. Otrzymane dane przedstawiam na wykresie pudełkowym podzielonym według tytułu stanowiska pracy.
+```{r}
+data <- data %>%
+  filter(job_title_sim %in% unlist(c(top_count_title)))
+
+plot4 <- ggplot(data, aes(x=job_title_sim, y=Avg.Salary.K.)) + 
+  geom_boxplot(fill="steelblue") + 
+  labs(title="Wykres pudełkowy pensji w zależności od tytułu stanowiska", x="Tytuł stanowiska", y="Średnie wynagrodzenie") +
+  theme_minimal() + 
+  theme(plot.title = element_text(hjust = 0.5))
+```
+
+
+```{r, echo=FALSE, out.width='100%'}
+plot4
+(data %>% 
+    group_by(job_title_sim) %>%
+    summarize(Median = median(Avg.Salary.K.)))
+```
+Na podstawie otrzymanego wykresu możemy wyciągnąć następujące wnioski: 
+
+* najwyższą medianę zarboków mają stanowiska Data scientist (114 tys. \$) i ML engineer (124 tys. \$)
+* prawie 3/4 Data scientist, ML engineer zarabia powyżej 100 tys. $
+* wekszość (ponad 3/4) Analyst i Data scientis PM NIE zarabia 100 tys. $
+* dane dla Data scientist wskazują na duże większe odchylenie ćwiartkowe niż dla ML engineer, ozncza to że faktycznie jako ML engineer mamy większe szanse trafienia na ofertę z płacą w wysokości bliskiej medianie, niż jako Data scientist gdzie rozrzut wartości jest większy 
+
+
+
+
+
